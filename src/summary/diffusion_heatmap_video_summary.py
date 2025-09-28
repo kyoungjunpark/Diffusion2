@@ -1,0 +1,389 @@
+from . import BaseSummary
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+from PIL import Image
+
+cm = plt.get_cmap('plasma')
+
+
+# cm = plt.get_cmap('jet')
+
+class Diffusion_Heatmap_Video_Summary(BaseSummary):
+    def __init__(self, log_dir, mode, args, loss_name, metric_name):
+        assert mode in ['train', 'val', 'test'], \
+            "mode should be one of ['train', 'val', 'test'] " \
+            "but got {}".format(mode)
+
+        super(Diffusion_Heatmap_Video_Summary, self).__init__(log_dir, mode, args)
+
+        self.log_dir = log_dir
+        self.mode = mode
+        self.args = args
+
+        self.loss = []
+        self.metric = []
+
+        self.loss_name = loss_name
+        self.metric_name = metric_name
+
+        self.path_output = None
+
+        # ImageNet normalization
+        self.img_mean = torch.tensor((0.485, 0.456, 0.406)).view(1, 3, 1, 1)
+        self.img_std = torch.tensor((0.229, 0.224, 0.225)).view(1, 3, 1, 1)
+
+    def update(self, global_step, sample, output):
+        if self.loss_name is not None:
+            self.loss = np.concatenate(self.loss, axis=0)
+            self.loss = np.mean(self.loss, axis=0, keepdims=True)
+
+            msg = [" {:<9s}|  ".format('Loss')]
+            for idx, loss_type in enumerate(self.loss_name):
+                val = self.loss[0, idx]
+                self.add_scalar('Loss/' + loss_type, val, global_step)
+
+                msg += ["{:<s}: {:.4f}  ".format(loss_type, val)]
+
+                if (idx + 1) % 10 == 0:
+                    msg += ["\n             "]
+
+            msg = "".join(msg)
+            print(msg)
+
+            f_loss = open(self.f_loss, 'a')
+            f_loss.write('{:04d} | {}\n'.format(global_step, msg))
+            f_loss.close()
+
+        if self.metric_name is not None:
+            self.metric = np.concatenate(self.metric, axis=0)
+
+            # Save the elements for CDF
+            np.save(self.f_metric_elem, self.metric[:, 0])
+            np.save(self.f_metric_ssim_elem, self.metric[:, 2])
+
+            self.metric = np.mean(self.metric, axis=0, keepdims=True)
+
+            msg = [" {:<9s}|  ".format('Metric')]
+            for idx, name in enumerate(self.metric_name):
+                val = self.metric[0, idx]
+                self.add_scalar('Metric/' + name, val, global_step)
+
+                msg += ["{:<s}: {:.4f}  ".format(name, val)]
+
+                if (idx + 1) % 10 == 0:
+                    msg += ["\n             "]
+
+            msg = "".join(msg)
+            print(msg)
+
+            f_metric = open(self.f_metric, 'a')
+            f_metric.write('{:04d} | {}\n'.format(global_step, msg))
+            f_metric.close()
+
+        # Un-normalization
+        overshot = sample['overshot'].detach()
+        overshot.mul_(self.img_std.type_as(overshot)).add_(self.img_mean.type_as(overshot))
+        overshot = overshot.data.cpu().numpy()
+
+        # dep = sample['dep'].detach().data.cpu().numpy()
+        heatmap = sample['heatmap'].detach().data.cpu().numpy()
+        # heatmap_a = sample['heatmap_a'].detach().data.cpu().numpy()
+
+        pred = output['pred'].detach().data.cpu().numpy()
+
+        if 'refineddepth' in output.keys():
+            refineddepth = output['refineddepth'].detach().data.cpu().numpy()
+
+        if output['confidence'] is not None:
+            confidence = output['confidence'].data.cpu().numpy()
+        else:
+            confidence = np.zeros_like(heatmap)
+
+        num_summary = overshot.shape[0]
+        if num_summary > self.args.num_summary:
+            num_summary = self.args.num_summary
+
+            overshot = overshot[0:num_summary, :, :, :]
+            # dep = dep[0:num_summary, :, :, :]
+            heatmap = heatmap[0:num_summary, :, :, :]
+            pred = pred[0:num_summary, :, :, :]
+            if 'refineddepth' in output.keys():
+                refineddepth = refineddepth[0:num_summary, :, :, :]
+            confidence = confidence[0:num_summary, :, :, :]
+        """
+        print("summary")
+        print(overshot.shape)
+        print(overshot)
+        print(pred.shape)
+
+        print(pred)
+        print(heatmap.shape)
+        print(heatmap)
+        """
+        overshot = np.clip(overshot, a_min=0, a_max=1.0)
+        # dep = np.clip(dep, a_min=0, a_max=self.args.max_depth)
+        heatmap = np.clip(heatmap, a_min=0, a_max=self.args.max_depth)
+        pred = np.clip(pred, a_min=0, a_max=self.args.max_depth)
+        if 'refineddepth' in output.keys():
+            refineddepth = np.clip(refineddepth, a_min=0, a_max=self.args.max_depth)
+        confidence = np.clip(confidence, a_min=0, a_max=1.0)
+
+        list_img = []
+        # Tensorboard image
+        for b in range(0, num_summary):
+            overshot_tmp = overshot[b, :, :, :]
+            # dep_tmp = dep[b, 0, :, :]
+            heatmap_tmp = heatmap[b, 0, :, :]
+            pred_tmp = pred[b, 0, :, :]
+            if 'refineddepth' in output.keys():
+                refineddepth_tmp = refineddepth[b, 0, :, :]
+            confidence_tmp = confidence[b, 0, :, :]
+
+            # dep_tmp = 255.0 * dep_tmp / self.args.max_depth
+            # heatmap_tmp = 255.0 * heatmap_tmp / self.args.max_depth
+            # pred_tmp = 255.0 * pred_tmp / self.args.max_depth
+            heatmap_tmp = 255.0 * heatmap_tmp
+            pred_tmp = 255.0 * pred_tmp
+            if 'refineddepth' in output.keys():
+                refineddepth_tmp = 255.0 * refineddepth_tmp / self.args.max_depth
+            confidence_tmp = 255.0 * confidence_tmp
+
+            # dep_tmp = cm(dep_tmp.astype('uint8'))
+            heatmap_tmp = cm(heatmap_tmp.astype('uint8'))
+            pred_tmp = cm(pred_tmp.astype('uint8'))
+            if 'refineddepth' in output.keys():
+                refineddepth_tmp = cm(refineddepth_tmp.astype('uint8'))
+            confidence_tmp = cm(confidence_tmp.astype('uint8'))
+
+            # dep_tmp = np.transpose(dep_tmp[:, :, :3], (2, 0, 1))
+            heatmap_tmp = np.transpose(heatmap_tmp[:, :, :3], (2, 0, 1))
+            pred_tmp = np.transpose(pred_tmp[:, :, :3], (2, 0, 1))
+            if 'refineddepth' in output.keys():
+                refineddepth_tmp = np.transpose(refineddepth_tmp[:, :, :3], (2, 0, 1))
+            confidence_tmp = np.transpose(confidence_tmp[:, :, :3], (2, 0, 1))
+
+            img = np.concatenate((overshot_tmp, pred_tmp, heatmap_tmp, confidence_tmp), axis=1)
+            list_img.append(img)
+
+        img_total = np.concatenate(list_img, axis=2)
+        img_total = torch.from_numpy(img_total)
+
+        self.add_image(self.mode + '/images', img_total, global_step)
+        if output['gamma'] is not None:
+            self.add_scalar('Etc/gamma', output['gamma'], global_step)
+        else:
+            pass
+        self.flush()
+
+        # Reset
+        self.loss = []
+        self.metric = []
+
+    def save(self, epoch, idx, sample, output):
+        with torch.no_grad():
+            if self.args.save_result_only:
+                self.path_output = '{}/{}/epoch{:04d}'.format(self.log_dir,
+                                                              self.mode, epoch)
+                os.makedirs(self.path_output, exist_ok=True)
+
+                pred = output['pred'].detach()
+                for frame_idx in range(pred.size()[0]):
+                    path_save_pred = '{}/{:010d}{:05d}.png'.format(self.path_output, idx, frame_idx)
+                    raw_save_pred = '{}/{:010d}{:05d}.npy'.format(self.path_output, idx, frame_idx)
+
+                    pred = torch.clamp(pred, min=0)
+                    pred = pred[frame_idx, 0, :, :].data.cpu().numpy()
+                    raw_depth = pred
+                    # pred = (pred * 255.0).astype(np.uint16)
+                    pred = Image.fromarray(pred)
+                    pred.save(path_save_pred)
+                    if self.args.save_raw_npdepth:
+                        np.save(raw_save_pred, raw_depth)
+            else:
+                # Parse data
+                overshot = sample['overshot'].detach()
+                # dep = sample[''].detach()
+                pred = output['pred'].detach()
+                heatmap = sample['heatmap'].detach()
+                room_info = None
+                if 'room_info' in sample.keys():
+                    room_info = sample['room_info']
+                # depth_map = sample['depth_map'].detach()
+
+                # pred = torch.clamp(pred, min=0)
+
+                if output['guidance'] is not None:
+                    guidance = output['guidance'].data.cpu().numpy()
+                else:
+                    guidance = None
+                if output['offset'] is not None:
+                    offset = output['offset'].data.cpu().numpy()
+                else:
+                    offset = None
+
+                if output['aff'] is not None:
+                    aff = output['aff'].data.cpu().numpy()
+                else:
+                    aff = None
+                if output['gamma'] is not None:
+                    gamma = output['gamma'].data.cpu().numpy()
+                else:
+                    gamma = None
+                feat_init = output['pred_init']
+                if output['pred_inter'] is not None:
+                    list_feat = output['pred_inter']
+                else:
+                    list_feat = None
+
+                premeasured_map = output['premeasured_map'].detach()
+                premeasured_map.mul_(self.img_std.type_as(premeasured_map)).add_(
+                    self.img_mean.type_as(premeasured_map))
+
+                if 'refineddepth' in output.keys():
+                    refineddepth = output['refineddepth'].detach()
+                    refineddepth = torch.clamp(refineddepth, min=0)
+
+                # Un-normalization
+                overshot.mul_(self.img_std.type_as(overshot)).add_(
+                    self.img_mean.type_as(overshot))
+
+                # dep = dep[0, 0, :, :].data.cpu().numpy()
+
+                # print(pred.shape) # (200, 340)
+
+                if 'refineddepth' in output.keys():
+                    refineddepth = refineddepth[0, 0, :, :].data.cpu().numpy()
+                # depth_map = depth_map[0, 0, :, :].data.cpu().numpy()
+
+                # dep = dep / self.args.max_depth
+                # print("1")
+                # print(heatmap)
+                # print(pred)
+
+                # pred = pred / self.args.max_depth
+                if 'refineddepth' in output.keys():
+                    refineddepth = refineddepth / self.args.max_depth
+
+                # heatmap = heatmap / self.args.max_depth
+                # depth_map = depth_map / self.args.max_depth
+
+                # dep = Image.fromarray(dep[:, :, :3], 'RGB')
+                pred_list = []
+                pred_gray_list = []
+                heatmap_list = []
+                overshot_list = []
+
+                refineddepth_list = []
+                premeasured_map_list = []
+                for frame_idx in range(pred.size()[0]):
+                    pred_ins = pred[frame_idx, 0, :, :].data.cpu().numpy()
+                    pred_ins = np.clip(pred_ins, a_min=0, a_max=self.args.max_depth)
+
+                    pred_gray = pred_ins
+
+                    pred_ins = cm(pred_ins)
+                    pred_ins = (255.0 * pred_ins).astype('uint8')
+                    if 'refineddepth' in output.keys():
+                        refineddepth = (255.0 * cm(refineddepth)).astype('uint8')
+
+                    pred_gray = (255.0 * pred_gray).astype('uint8')
+                    pred_ins = Image.fromarray(pred_ins[:, :, :3], 'RGB')
+                    pred_list.append(pred_ins)
+
+                    pred_gray = Image.fromarray(pred_gray)
+                    pred_gray_list.append(pred_gray)
+
+                    heatmap_ins = heatmap[frame_idx, 0, :, :].data.cpu().numpy()
+                    heatmap_ins = (255.0 * cm(heatmap_ins)).astype('uint8')
+
+                    heatmap_ins = Image.fromarray(heatmap_ins[:, :, :3], 'RGB')
+                    heatmap_list.append(heatmap_ins)
+
+                    overshot_ins = overshot[frame_idx, :, :, :].data.cpu().numpy()
+                    overshot_ins = 255.0 * np.transpose(overshot_ins, (1, 2, 0))
+                    overshot_ins = np.clip(overshot_ins, 0, 256).astype('uint8')
+                    overshot_ins = Image.fromarray(overshot_ins, 'RGB')
+                    overshot_list.append(overshot_ins)
+
+                    if 'refineddepth' in output.keys():
+                        refineddepth_ins = Image.fromarray(refineddepth[:, :, :3], 'RGB')
+                        refineddepth_list.append(refineddepth_ins)
+
+                    premeasured_map_ins = premeasured_map[frame_idx, :, :, :].data.cpu().numpy()
+                    premeasured_map_ins = 255.0 * np.transpose(premeasured_map_ins, (1, 2, 0))
+                    premeasured_map_ins = np.clip(premeasured_map_ins, 0, 256).astype('uint8')
+                    premeasured_map_ins = Image.fromarray(premeasured_map_ins, 'RGB')
+                    premeasured_map_list.append(premeasured_map_ins)
+
+                # depth_map = Image.fromarray(depth_map[:, :, :3], 'RGB')
+
+                feat_init = feat_init[0, 0, :, :].data.cpu().numpy()
+                # feat_init = feat_init / self.args.max_depth
+                feat_init = (255.0 * cm(feat_init)).astype('uint8')
+                feat_init = Image.fromarray(feat_init[:, :, :3], 'RGB')
+
+                if list_feat is not None:
+                    for k in range(0, len(list_feat)):
+                        feat_inter = list_feat[k]
+                        feat_inter = feat_inter[0, 0, :, :].data.cpu().numpy()
+                        feat_inter = np.clip(feat_inter, a_min=0, a_max=self.args.max_depth)
+
+                        # feat_inter = feat_inter / self.args.max_depth
+                        feat_inter = (255.0 * cm(feat_inter)).astype('uint8')
+                        feat_inter = Image.fromarray(feat_inter[:, :, :3], 'RGB')
+
+                        list_feat[k] = feat_inter
+
+                self.path_output = '{}/{}/epoch{:04d}/{:08d}'.format(
+                    self.log_dir, self.mode, epoch, idx)
+                os.makedirs(self.path_output, exist_ok=True)
+
+                path_save_room_info = '{}/room_info.txt'.format(self.path_output)
+
+                # path_save_dep = '{}/02_dep.png'.format(self.path_output)
+                path_save_dep_map = '{}/02_dep_map_simple.png'.format(self.path_output)
+                path_save_init = '{}/03_pred_init.png'.format(self.path_output)
+
+                # dep.save(path_save_dep)
+                feat_init.save(path_save_init)
+                if room_info:
+                    with open(path_save_room_info, "w") as file:
+                        file.write(str(room_info[0]))
+
+                for frame_idx in range(len(pred_list)):
+                    path_save_premeasured = '{}/{}_premeasured.png'.format(self.path_output, frame_idx)
+                    if 'refineddepth' in output.keys():
+                        path_save_refineddepth = '{}/{}_path_save_refineddepth.png'.format(self.path_output, frame_idx)
+                    path_save_pred = '{}/{}_pred_final.png'.format(self.path_output, frame_idx)
+                    path_save_pred_gray = '{}/{}_pred_final_gray.png'.format(
+                        self.path_output, frame_idx)
+                    path_save_gt = '{}/{}_gt.png'.format(self.path_output, frame_idx)
+                    path_save_overshot = '{}/{}_overshot.png'.format(self.path_output, frame_idx)
+
+                    pred_list[frame_idx].save(path_save_pred)
+                    if 'refineddepth' in output.keys():
+                        refineddepth_list[frame_idx].save(path_save_refineddepth)
+                    pred_gray_list[frame_idx].save(path_save_pred_gray)
+                    premeasured_map_list[frame_idx].save(path_save_premeasured)
+
+                    heatmap_list[frame_idx].save(path_save_gt)
+                    overshot_list[frame_idx].save(path_save_overshot)
+
+                # depth_map.save(path_save_dep_map)
+                # print('save rgb path is {}'.format(path_save_rgb))
+
+                if list_feat is not None:
+                    for k in range(0, len(list_feat)):
+                        path_save_inter = '{}/04_pred_prop_{:02d}.png'.format(
+                            self.path_output, k)
+                        list_feat[k].save(path_save_inter)
+
+                if guidance is not None:
+                    np.save('{}/guidance.npy'.format(self.path_output), guidance)
+                    np.save('{}/offset.npy'.format(self.path_output), offset)
+                    np.save('{}/aff.npy'.format(self.path_output), aff)
+                    np.save('{}/gamma.npy'.format(self.path_output), gamma)
+                else:
+                    pass
