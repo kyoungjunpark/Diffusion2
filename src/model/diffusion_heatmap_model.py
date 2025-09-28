@@ -1,4 +1,3 @@
-# Copyright (c) Phigent Robotics. All rights reserved.
 
 """
 # from model.builder import DETECTORS

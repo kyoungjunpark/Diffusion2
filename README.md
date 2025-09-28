@@ -66,10 +66,10 @@ sudo sh cuda_11.7.0_515.43.04_linux.run
 ### 2. Activate Conda Environment
 
 ```bash
-conda create -y -n rfvision python=3.9
+conda create -y -n diffusion2 python=3.9
 conda init bash
 source ~/.bashrc
-conda activate rfvision
+conda activate diffusion2
 ```
 
 ### 3. Install Core Dependencies
@@ -205,3 +205,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 accelerate launch --main_process_port 5008 
     --diffusion_type DDIM \
     --port 5008 --video_fps 10
 ```
+
+
+## Acknowledgements
+
+We sincerely appreciate the contributions of the open-source community, especially DiffusionDepth.

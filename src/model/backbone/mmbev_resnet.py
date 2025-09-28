@@ -1,4 +1,3 @@
-# Copyright (c) Phigent Robotics. All rights reserved.
 # for debug
 # import sys
 
