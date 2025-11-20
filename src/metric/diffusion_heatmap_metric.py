@@ -601,8 +601,8 @@ class Diffusion_Heatmap_Metric(BaseMetric):
                     # print(error, final_error, med_rssi_real[idx], coord_indices, (x_real[idx], y_real[idx]))
                     errors.append(error)
                     mmwave_errors.append(mmwave_error)
-            np.save("/home/yifanyang/mmwave_result.npy", mmwave_errors)
-            np.save("/home/yifanyang/diffusion_result.npy", errors)
+            np.save("/home/mmwave_result.npy", mmwave_errors)
+            np.save("/home/diffusion_result.npy", errors)
 
             print("Diffusion error: ", np.nanmean(errors), np.nanmedian(errors))
             print("total: ", len(errors))
